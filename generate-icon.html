@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html>
+<body style="background:#000;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;gap:16px;font-family:-apple-system,sans-serif;color:white">
+<canvas id="c" width="128" height="128"></canvas>
+<button onclick="dl()" style="padding:10px 28px;background:#ff3b30;color:white;border:none;border-radius:8px;font-size:14px;cursor:pointer;font-weight:500">Download icon.png</button>
+<p style="opacity:0.4;font-size:12px;margin:0">Save as icon.png in the screen-recorder folder, then reload the extension.</p>
+<script>
+const c = document.getElementById('c');
+const ctx = c.getContext('2d');
+const S = 128, cx = 64, cy = 64;
+
+// Background — green rounded square
+const bg = ctx.createLinearGradient(0, 0, S, S);
+bg.addColorStop(0, '#22c55e');
+bg.addColorStop(1, '#16a34a');
+ctx.fillStyle = bg;
+rrect(0, 0, S, S, 26);
+ctx.fill();
+
+// Outer ring — white, thin
+ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+ctx.lineWidth = 5;
+ctx.beginPath();
+ctx.arc(cx, cy, 40, 0, Math.PI * 2);
+ctx.stroke();
+
+// Inner filled circle — red
+ctx.fillStyle = '#ff3b30';
+ctx.beginPath();
+ctx.arc(cx, cy, 25, 0, Math.PI * 2);
+ctx.fill();
+
+// Highlight glint
+ctx.fillStyle = 'rgba(255,255,255,0.18)';
+ctx.beginPath();
+ctx.arc(cx - 8, cy - 8, 7, 0, Math.PI * 2);
+ctx.fill();
+
+function rrect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x+r,y); ctx.lineTo(x+w-r,y);
+  ctx.quadraticCurveTo(x+w,y,x+w,y+r);
+  ctx.lineTo(x+w,y+h-r);
+  ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);
+  ctx.lineTo(x+r,y+h);
+  ctx.quadraticCurveTo(x,y+h,x,y+h-r);
+  ctx.lineTo(x,y+r);
+  ctx.quadraticCurveTo(x,y,x+r,y);
+  ctx.closePath();
+}
+
+function dl() {
+  const a = document.createElement('a');
+  a.href = c.toDataURL('image/png');
+  a.download = 'icon.png';
+  a.click();
+}
+</script>
+</body>
+</html>
