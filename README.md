@@ -9,12 +9,13 @@ Built with canvas compositing so your webcam is baked directly into the recordin
 ## Features
 
 - Records screen + webcam + audio in one composited video file
-- Webcam panel and screen panel rendered side by side (Loom-style)
+- Choose format on each recording: **YouTube** (landscape) or **Reel** (vertical 9:16)
 - Branding overlay with your name, title, and website
 - Pause and resume mid-recording
-- Face preview via Picture-in-Picture while recording (your face floats as a browser overlay — not captured in the video)
+- Face preview via Picture-in-Picture while recording (not captured in the video)
+- Falls back to a floating webcam bubble if PiP is blocked by the site
 - Control bar hides during recording so it never appears in the output
-- Saves as MP4 (falls back to WebM if your Chrome version doesn't support it)
+- Saves as MP4 (falls back to WebM if unsupported)
 - 60fps, 12 Mbps — high clarity output
 
 ---
@@ -34,22 +35,36 @@ This extension is not on the Chrome Web Store. Load it manually:
 
 ## How to Use
 
-1. Navigate to any webpage (the extension won't run on `chrome://` pages)
+1. Navigate to any webpage (won't run on `chrome://` pages)
 2. Click the **Screen Recorder** icon in your toolbar
-3. A control bar appears in the top right — drag it anywhere
-4. Choose your source:
-   - **This Tab** — records the current tab (best quality, no hardware acceleration issues)
-   - **Screen / Window / Tab** — lets you pick any window or display
-5. Click **Record** and grant screen + camera permissions when prompted
-6. Your face appears in a floating Picture-in-Picture window so you can see yourself without it being captured
-7. Click **Stop** in the control bar, or click **Stop sharing** in Chrome's native share bar
-8. The file saves automatically to your Downloads folder
+3. A control bar appears — drag it anywhere on the page
+4. Choose your format: **YouTube** or **Reel**
+5. Choose your source:
+   - **This Tab** — records the current tab (best quality)
+   - **Screen / Window / Tab** — pick any window or display
+6. Click **Record** and grant screen + camera permissions
+7. Your face appears in a floating PiP window during recording (not captured). On sites that block PiP, a small webcam bubble appears instead
+8. Click **Stop**, or click **Stop sharing** in Chrome's share bar
+9. File saves automatically to your Downloads folder
+
+---
+
+## Formats
+
+Pick your format each time you hit record — no need to change any config.
+
+| Format | Canvas | Layout |
+|---|---|---|
+| **YouTube** | 1920 × 1080 | Webcam panel left (cover), screen right (full, no crop) |
+| **Reel** | 1080 × 1920 | Screen top 75% (full, blurred fill for gaps), face bottom 25% (cover) |
+
+More layouts coming soon.
 
 ---
 
 ## Branding
 
-Edit `branding.js` to add your name and details to the recording. The overlay appears as a clean bookmark-style badge in the bottom-right corner of the screen panel.
+Edit `branding.js` to add your name and details. The overlay appears as a bookmark-style badge in the bottom-right corner of the screen panel.
 
 ```js
 window.SR_BRANDING = {
@@ -59,26 +74,11 @@ window.SR_BRANDING = {
   website: 'yoursite.com',   // leave '' to hide
 
   show:        true,         // set false to hide branding entirely
-  accentColor: '#ff3b30',    // the colour of the vertical bar
-
-  template: 'side-by-side',  // layout — see below
+  accentColor: '#ff3b30',    // colour of the vertical accent bar
 };
 ```
 
-After editing, go to `chrome://extensions` and click the refresh icon on the extension card to reload it.
-
----
-
-## Layouts
-
-Switch layouts by changing the `template` value in `branding.js`.
-
-| Template | Description |
-|---|---|
-| `side-by-side` | Webcam portrait panel on the left, screen on the right. Dark warm background. |
-| `screen-focus` | Screen fills the full frame. Webcam appears as a circle overlay in the bottom-left corner. |
-
-More layouts coming soon.
+After editing, go to `chrome://extensions` and click the reload icon on the extension card.
 
 ---
 
@@ -86,22 +86,25 @@ More layouts coming soon.
 
 ```
 screen-recorder/
-├── manifest.json          Chrome extension manifest (MV3)
-├── background.js          Injects scripts on icon click
-├── branding.js            Your personal branding config — edit this
-├── content.js             Core recorder: UI, canvas compositing, MediaRecorder
-├── icon.png               Extension icon
-├── generate-icon.html     Open in browser to regenerate the icon
+├── manifest.json           Chrome extension manifest (MV3)
+├── background.js           Injects scripts on icon click
+├── branding.js             Branding config — edit this
+├── content.js              Core recorder: UI, canvas compositing, MediaRecorder
+├── icon.png                Extension icon
+├── generate-icon.html      Open in browser to regenerate the icon
 └── templates/
-    ├── side-by-side.js    Layout: webcam left + screen right
-    └── screen-focus.js    Layout: fullscreen + webcam circle
+    ├── youtube.js          1920×1080 — webcam left, screen right
+    ├── reel.js             1080×1920 — screen top, face bottom
+    ├── side-by-side.js     Legacy layout
+    └── screen-focus.js     Legacy fullscreen + webcam circle
 ```
 
 ---
 
 ## Notes
 
-- Recordings are saved to your **Downloads** folder
-- If the MP4 file has no video, your Chrome version may not support canvas → MP4 encoding — the extension will fall back to WebM automatically
-- To record YouTube or other hardware-accelerated video cleanly, use **This Tab** as the source
-- The extension only activates on http/https pages — it won't run on `chrome://` or extension pages
+- Recordings save to your **Downloads** folder
+- If saved MP4 has no video, Chrome doesn't support canvas → MP4 on your version — extension falls back to WebM automatically
+- For recording YouTube or hardware-accelerated video, use **This Tab** as source
+- After reloading the extension, always refresh the page before recording again
+- The extension only activates on `http/https` pages

@@ -3,5 +3,7 @@ chrome.action.onClicked.addListener(async (tab) => {
   await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['branding.js'] });
   await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['templates/side-by-side.js'] });
   await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['templates/screen-focus.js'] });
+  await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['templates/youtube.js'] });
+  await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['templates/reel.js'] });
   await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
 });

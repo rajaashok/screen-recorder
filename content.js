@@ -7,6 +7,11 @@
   }
   window.__srLoaded = true;
 
+  // Returns false when the extension has been reloaded/disabled mid-session
+  function ctxOk() {
+    try { return !!(chrome.runtime && chrome.runtime.id); } catch { return false; }
+  }
+
   // ─── State ───────────────────────────────────────────────────────────────
   const state = {
     recording: false,
@@ -133,6 +138,39 @@
     #sr-source:hover { background-color: rgba(255,255,255,0.14); }
     #sr-source option { background: #1c1c1e; color: #fff; }
 
+    /* ── Format picker ── */
+    #sr-format-pick {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .sr-fmt-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border-radius: 999px;
+      padding: 8px 18px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      border: 1.5px solid rgba(255,255,255,0.14);
+      background: rgba(255,255,255,0.07);
+      color: #fff;
+      transition: all 0.15s;
+      line-height: 1;
+    }
+    .sr-fmt-btn:active { transform: scale(0.96); }
+    .sr-fmt-btn.youtube:hover { background: rgba(255,30,30,0.18); border-color: rgba(255,60,60,0.5); }
+    .sr-fmt-btn.reel:hover    { background: rgba(130,80,255,0.18); border-color: rgba(160,100,255,0.5); }
+
+    /* ── Recording controls (shown after format is chosen) ── */
+    #sr-controls {
+      display: none;
+      align-items: center;
+      gap: 10px;
+    }
+    #sr-controls.active { display: flex; }
+
     .sr-btn {
       display: inline-flex;
       align-items: center;
@@ -251,14 +289,20 @@
     bar.innerHTML = `
       <span id="sr-dot"></span>
       <span id="sr-timer">0:00</span>
-      <div id="sr-cam-mini"><video id="sr-cam-mini-vid" autoplay muted playsinline></video></div>
-      <select id="sr-source">
-        <option value="tab">This Tab</option>
-        <option value="any">Screen / Window / Tab</option>
-      </select>
-      <button class="sr-btn" id="sr-rec-btn">&#9679; Record</button>
-      <button class="sr-btn" id="sr-pause-btn">&#9646;&#9646; Pause</button>
-      <button class="sr-btn" id="sr-stop-btn">&#9632; Stop</button>
+      <div id="sr-format-pick">
+        <button class="sr-fmt-btn youtube" id="sr-fmt-youtube">▶ YouTube</button>
+        <button class="sr-fmt-btn reel"    id="sr-fmt-reel">↕ Reel</button>
+      </div>
+      <div id="sr-controls">
+        <div id="sr-cam-mini"><video id="sr-cam-mini-vid" autoplay muted playsinline></video></div>
+        <select id="sr-source">
+          <option value="tab">This Tab</option>
+          <option value="any">Screen / Window / Tab</option>
+        </select>
+        <button class="sr-btn" id="sr-rec-btn">&#9679; Record</button>
+        <button class="sr-btn" id="sr-pause-btn">&#9646;&#9646; Pause</button>
+        <button class="sr-btn" id="sr-stop-btn">&#9632; Stop</button>
+      </div>
       <button class="sr-btn" id="sr-close-btn">&#x2715;</button>
     `;
     document.body.appendChild(bar);
@@ -281,6 +325,15 @@
 
     makeDraggable(bubble);
     makeDraggable(bar);
+
+    // Format picker — sets template and reveals recording controls
+    function selectFormat(tmpl) {
+      if (window.SR_BRANDING) window.SR_BRANDING.template = tmpl;
+      document.getElementById('sr-format-pick').style.display = 'none';
+      document.getElementById('sr-controls').classList.add('active');
+    }
+    bar.querySelector('#sr-fmt-youtube').addEventListener('click', () => selectFormat('youtube'));
+    bar.querySelector('#sr-fmt-reel').addEventListener('click',    () => selectFormat('reel'));
 
     bar.querySelector('#sr-rec-btn').addEventListener('click', startRecording);
     bar.querySelector('#sr-pause-btn').addEventListener('click', togglePause);
@@ -443,7 +496,48 @@
   // ─── Recording ───────────────────────────────────────────────────────────
   async function startRecording() {
     try {
-      // 1. Screen capture
+      // 1. Webcam + mic first — must happen before getDisplayMedia so that
+      //    requestPictureInPicture() can be called while user gesture is still live.
+      try {
+        state.webcamStream = await navigator.mediaDevices.getUserMedia({
+          video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 60 } },
+          audio: true,
+        });
+      } catch {
+        console.warn('Screen Recorder: webcam/mic not available');
+      }
+
+      // 2. Face preview — PiP if the site allows it, otherwise webcam bubble fallback
+      if (state.webcamStream) {
+        let pipOk = false;
+        if (document.pictureInPictureEnabled) {
+          try {
+            state.pipVid = document.createElement('video');
+            state.pipVid.srcObject = state.webcamStream;
+            state.pipVid.muted = true;
+            Object.assign(state.pipVid.style, {
+              position: 'fixed', top: '0', left: '0',
+              width: '1px', height: '1px', pointerEvents: 'none',
+            });
+            document.body.appendChild(state.pipVid);
+            await state.pipVid.play();
+            await state.pipVid.requestPictureInPicture();
+            pipOk = true;
+          } catch {
+            state.pipVid?.remove();
+            state.pipVid = null;
+          }
+        }
+        if (!pipOk) {
+          // Fallback: floating bubble — note it may appear in tab recordings
+          const camVidEl = document.getElementById('sr-cam-vid');
+          if (camVidEl) camVidEl.srcObject = state.webcamStream;
+          document.getElementById('sr-webcam')?.classList.add('active');
+          showToast('PiP blocked by site — face preview may appear in recording', 4000);
+        }
+      }
+
+      // 3. Screen capture
       const source = document.getElementById('sr-source')?.value ?? 'tab';
       const displayOptions = {
         video: { cursor: 'always', frameRate: { ideal: 60 }, width: { ideal: 1920 }, height: { ideal: 1080 } },
@@ -455,36 +549,25 @@
       }
       state.screenStream = await navigator.mediaDevices.getDisplayMedia(displayOptions);
 
-      // 2. Webcam + mic (optional)
-      try {
-        state.webcamStream = await navigator.mediaDevices.getUserMedia({
-          video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 60 } },
-          audio: true,
-        });
-      } catch {
-        console.warn('Screen Recorder: webcam/mic not available');
-      }
-
-      // 3. Webcam preview — mini bar thumbnail only (bubble stays hidden so it
-      //    doesn't appear in the screen capture). A separate offscreen video
-      //    element is used for canvas drawing so display:none doesn't block it.
+      // 4. Offscreen webcam video for canvas compositing
       const miniVid = document.getElementById('sr-cam-mini-vid');
       if (state.webcamStream) {
-        // Mini bar preview (visible to user for framing)
         miniVid.srcObject = state.webcamStream;
         document.getElementById('sr-cam-mini').classList.add('active');
 
-        // Offscreen video for canvas — must be played explicitly, not via autoplay
         state.camVid = document.createElement('video');
         state.camVid.srcObject = state.webcamStream;
         state.camVid.muted = true;
         await state.camVid.play();
       }
 
-      // 4. Canvas compositing — Loom-style side-by-side layout
+      // 4. Canvas compositing — dimensions driven by the selected template
       const screenTrack = state.screenStream.getVideoTracks()[0];
 
-      const CW = 1920, CH = 1080;
+      const tmplKey0 = (window.SR_BRANDING && window.SR_BRANDING.template) || 'youtube';
+      const tmpl0    = (window.SR_TEMPLATES || {})[tmplKey0] || {};
+      const CW = tmpl0.width  || 1920;
+      const CH = tmpl0.height || 1080;
       const canvas = document.createElement('canvas');
       canvas.width  = CW;
       canvas.height = CH;
@@ -500,6 +583,7 @@
       state.drawing = true;
       state.drawInterval = setInterval(() => {
         if (!state.drawing) return;
+        if (!ctxOk()) { cleanupStreams(); return; }
         try {
           const tmplKey = (window.SR_BRANDING && window.SR_BRANDING.template) || 'side-by-side';
           const tmpls   = window.SR_TEMPLATES || {};
@@ -554,32 +638,14 @@
       document.getElementById('sr-stop-btn').style.display  = 'inline-flex';
       document.getElementById('sr-bar').style.display       = 'none';
 
-      // 8b. Webcam face preview via Picture-in-Picture — floats as an OS-level
-      //     overlay so it is NOT captured by getDisplayMedia.
-      if (state.webcamStream) {
-        try {
-          state.pipVid = document.createElement('video');
-          state.pipVid.srcObject = state.webcamStream;
-          state.pipVid.muted = true;
-          // Tiny off-screen element — PiP only needs it in the DOM and playing
-          Object.assign(state.pipVid.style, {
-            position: 'fixed', top: '-2px', left: '-2px',
-            width: '1px', height: '1px', opacity: '0', pointerEvents: 'none',
-          });
-          document.body.appendChild(state.pipVid);
-          await state.pipVid.play();
-          await state.pipVid.requestPictureInPicture();
-        } catch (e) {
-          console.warn('SR: PiP not available:', e);
-          state.pipVid?.remove();
-          state.pipVid = null;
-        }
-      }
-
       // 9. Timer
       state.seconds = 0;
       updateTimer();
-      state.timerInterval = setInterval(() => { state.seconds++; updateTimer(); }, 1000);
+      state.timerInterval = setInterval(() => {
+        if (!ctxOk()) { stopRecording(); return; }
+        state.seconds++;
+        updateTimer();
+      }, 1000);
 
     } catch (err) {
       if (err.name !== 'NotAllowedError' && err.name !== 'AbortError') {
@@ -605,7 +671,11 @@
     } else {
       state.mediaRecorder.resume();
       state.paused = false;
-      state.timerInterval = setInterval(() => { state.seconds++; updateTimer(); }, 1000);
+      state.timerInterval = setInterval(() => {
+        if (!ctxOk()) { stopRecording(); return; }
+        state.seconds++;
+        updateTimer();
+      }, 1000);
       dot.classList.remove('paused');
       dot.classList.add('on');
       btn.innerHTML = '&#9646;&#9646; Pause';
@@ -626,23 +696,29 @@
     cleanupStreams();
 
     state.paused = false;
-    document.getElementById('sr-bar').style.display       = 'flex';
+    // Show bar again — return to format picker so user can choose next format
+    document.getElementById('sr-bar').style.display            = 'flex';
+    document.getElementById('sr-format-pick').style.display    = 'flex';
+    document.getElementById('sr-controls').classList.remove('active');
     document.getElementById('sr-dot').classList.remove('on');
     document.getElementById('sr-dot').classList.remove('paused');
     document.getElementById('sr-cam-mini').classList.remove('active');
-    document.getElementById('sr-source').style.display    = 'inline-block';
-    document.getElementById('sr-rec-btn').style.display   = 'inline-flex';
+    // Reset internal control states for next session
+    document.getElementById('sr-rec-btn').style.display   = '';
+    document.getElementById('sr-source').style.display    = '';
     document.getElementById('sr-pause-btn').style.display = 'none';
     document.getElementById('sr-pause-btn').classList.remove('resumed');
     document.getElementById('sr-pause-btn').innerHTML = '&#9646;&#9646; Pause';
     document.getElementById('sr-stop-btn').style.display  = 'none';
-    document.getElementById('sr-webcam').classList.remove('active');
+    document.getElementById('sr-webcam')?.classList.remove('active');
     // Reset bubble position
     const bubble = document.getElementById('sr-webcam');
-    bubble.style.left   = '28px';
-    bubble.style.top    = '';
-    bubble.style.right  = '';
-    bubble.style.bottom = '28px';
+    if (bubble) {
+      bubble.style.left   = '28px';
+      bubble.style.top    = '';
+      bubble.style.right  = '';
+      bubble.style.bottom = '28px';
+    }
     document.getElementById('sr-timer').textContent = '0:00';
   }
 

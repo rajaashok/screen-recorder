@@ -17,6 +17,6 @@ window.SR_BRANDING = {
   position:     'bottom-right',  // 'bottom-left' | 'bottom-right'
 
   // ── Layout Template ────────────────────────────────────────
-  template: 'side-by-side',     // 'side-by-side' | 'screen-focus'
+  template: 'youtube',          // 'youtube' | 'reel' | 'side-by-side' | 'screen-focus'
 
 };
