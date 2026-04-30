@@ -10,7 +10,7 @@ window.SR_TEMPLATES['youtube'] = {
   label:  'YouTube',
   width:  1920,
   height: 1080,
-  draw({ ctx, CW, CH, screenVid, camVid, rrect, drawBranding }) {
+  draw({ ctx, CW, CH, screenVid, camVid, rrect, drawBranding, setScreenBounds }) {
     const pad    = Math.round(CH * 0.028);
     const gap    = Math.round(CH * 0.014);
     const radius = Math.round(CH * 0.032);
@@ -44,6 +44,7 @@ window.SR_TEMPLATES['youtube'] = {
       ctx.fillRect(scrX, pad, scrW, scrH);
       ctx.drawImage(screenVid, dx, dy, dw, dh);
       ctx.restore();
+      setScreenBounds && setScreenBounds({ dx, dy, dw, dh });
       drawBranding(ctx, CW, CH, scrX, scrW, scrH, pad);
     }
 

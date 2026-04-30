@@ -7,6 +7,13 @@
   }
   window.__srLoaded = true;
 
+  // Pre-compute the teleprompter URL now, while the extension context is
+  // guaranteed valid (we were just injected). Storing it as a plain string
+  // means openTpPopup never needs to call chrome.runtime.getURL() later —
+  // no risk of "Extension context invalidated" from a Chrome API call.
+  let _tpUrl = null;
+  try { _tpUrl = chrome.runtime.getURL('teleprompter.html'); } catch {}
+
   // Returns false when the extension has been reloaded/disabled mid-session
   function ctxOk() {
     try { return !!(chrome.runtime && chrome.runtime.id); } catch { return false; }
@@ -28,6 +35,23 @@
     audioCtx: null,
     timerInterval: null,
     seconds: 0,
+    recStartTime: 0,      // Date.now() when MediaRecorder actually started
+    fadeIn: 1,            // 0→1 at recording start (drives black overlay)
+    isFadingOut: false,   // true while stop fade is running
+    fadeOut: 0,           // 0→1 at recording end
+    cursorX: 0,           // page cursor position for spotlight
+    cursorY: 0,
+    screenDrawRect: null, // {dx,dy,dw,dh} set by active template for cursor mapping
+    source: 'tab',        // 'tab' | 'any' — set at record time
+    countdown: 0,         // 3/2/1 during countdown, 0 otherwise
+    _finalized: false,    // guard against double finalizeStop calls
+    tp: {
+      text: '',
+      size: 36,
+      speed: 50,
+      popup: null,
+      _listenerAdded: false,
+    },
   };
 
   // ─── Styles ───────────────────────────────────────────────────────────────
@@ -245,6 +269,24 @@
       transform: scaleX(-1);
     }
 
+    /* ── Countdown overlay ── */
+    #sr-countdown {
+      position: fixed;
+      inset: 0;
+      z-index: 2147483648;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0,0,0,0.72);
+      font-size: 200px;
+      font-weight: 800;
+      color: #fff;
+      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+      pointer-events: none;
+      text-shadow: 0 0 100px rgba(255,255,255,0.25);
+      letter-spacing: -0.02em;
+    }
+
     /* ── Toast ── */
     #sr-toast {
       position: fixed;
@@ -299,6 +341,7 @@
           <option value="tab">This Tab</option>
           <option value="any">Screen / Window / Tab</option>
         </select>
+        <button class="sr-btn" id="sr-tp-toggle" title="Teleprompter">&#9776; Script</button>
         <button class="sr-btn" id="sr-rec-btn">&#9679; Record</button>
         <button class="sr-btn" id="sr-pause-btn">&#9646;&#9646; Pause</button>
         <button class="sr-btn" id="sr-stop-btn">&#9632; Stop</button>
@@ -323,6 +366,45 @@
     toast.id = 'sr-toast';
     document.body.appendChild(toast);
 
+    // Teleprompter — opens as a proper extension page.
+    // _tpUrl was pre-computed at inject time (guaranteed valid context), so this
+    // function never needs to call any Chrome API — safe even after extension reload.
+    function openTpPopup() {
+      if (!_tpUrl) {
+        showToast('Reload the page to use Script', 4000);
+        return;
+      }
+
+      try {
+        if (state.tp.popup && !state.tp.popup.closed) { state.tp.popup.focus(); return; }
+      } catch { state.tp.popup = null; }
+
+      const url = _tpUrl;
+
+      const pw = Math.min(screen.width, 960), ph = 320;
+      const pop = window.open(url, 'sr_teleprompter',
+        `width=${pw},height=${ph},top=0,left=${Math.round((screen.width-pw)/2)},menubar=no,toolbar=no,scrollbars=no,resizable=yes`);
+      if (!pop) { showToast('Allow popups for teleprompter', 4000); return; }
+      state.tp.popup = pop;
+
+      if (!state.tp._listenerAdded) {
+        state.tp._listenerAdded = true;
+        window.addEventListener('message', (e) => {
+          if (e.data && e.data.type === 'tp-settings') {
+            state.tp.text  = e.data.text;
+            state.tp.size  = e.data.size;
+            state.tp.speed = e.data.speed;
+          }
+        });
+      }
+    }
+
+    // Track cursor for spotlight effect
+    document.addEventListener('mousemove', (e) => {
+      state.cursorX = e.clientX;
+      state.cursorY = e.clientY;
+    });
+
     makeDraggable(bubble);
     makeDraggable(bar);
 
@@ -335,11 +417,16 @@
     bar.querySelector('#sr-fmt-youtube').addEventListener('click', () => selectFormat('youtube'));
     bar.querySelector('#sr-fmt-reel').addEventListener('click',    () => selectFormat('reel'));
 
+    bar.querySelector('#sr-tp-toggle').addEventListener('click', openTpPopup);
+
     bar.querySelector('#sr-rec-btn').addEventListener('click', startRecording);
     bar.querySelector('#sr-pause-btn').addEventListener('click', togglePause);
     bar.querySelector('#sr-stop-btn').addEventListener('click', stopRecording);
     bar.querySelector('#sr-close-btn').addEventListener('click', () => {
-      if (!state.recording) teardown();
+      if (!state.recording) {
+        cleanupStreams();
+        teardown();
+      }
     });
   }
 
@@ -376,7 +463,7 @@
   }
 
   // ─── Helpers ─────────────────────────────────────────────────────────────
-  // Strong bookmark branding: dark box + vertical accent bar + stacked text
+  // Strong bookmark branding: animated lower-third — slides in at 2s, fades out at 8s
   function drawBranding(ctx, CW, CH, scrX, scrW, scrH, panY) {
     const b = window.SR_BRANDING;
     if (!b || !b.show) return;
@@ -387,6 +474,19 @@
     const website = (b.website || '').trim();
     const accent  = b.accentColor || '#ff3b30';
     if (!name) return;
+
+    // Animation: hidden → slide up + fade in (2-3s) → hold (3-8s) → fade out (8-9s) → hidden
+    const elapsed = state.recStartTime ? (Date.now() - state.recStartTime) / 1000 : 0;
+    let alpha = 0, slideY = 0;
+    if      (elapsed < 2)  { return; }
+    else if (elapsed < 3)  { const p = elapsed - 2; alpha = p;       slideY = (1 - p) * 32; }
+    else if (elapsed < 8)  { alpha = 1; slideY = 0; }
+    else if (elapsed < 9)  { alpha = Math.max(0, 1 - (elapsed - 8)); slideY = 0; }
+    else                   { return; }
+
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.translate(0, slideY);
 
     const subtitle = [title, company].filter(Boolean).join('  ·  ');
     const fontFace = "system-ui, -apple-system, 'Segoe UI', Arial, sans-serif";
@@ -476,7 +576,8 @@
       ctx.fillText(website, textX, textY);
     }
 
-    ctx.restore();
+    ctx.restore(); // inner save (text drawing)
+    ctx.restore(); // outer save (animation alpha + translate)
   }
 
   function rrect(ctx, x, y, w, h, r) {
@@ -493,22 +594,66 @@
     ctx.closePath();
   }
 
+  // ─── Teleprompter ────────────────────────────────────────────────────────
+  function startTeleprompter() {
+    const tp = state.tp;
+    if (!tp.popup || tp.popup.closed) {
+      // Popup was never opened or user closed it — teleprompter is optional, silently skip
+      return;
+    }
+    tp.popup.postMessage({ cmd: 'start', text: tp.text, size: tp.size, speed: tp.speed }, '*');
+    try { tp.popup.focus(); } catch {}
+    console.log('SR: teleprompter started, text length:', tp.text?.length, 'speed:', tp.speed);
+  }
+
+  function stopTeleprompter() {
+    const tp = state.tp;
+    if (tp.popup && !tp.popup.closed) {
+      tp.popup.postMessage({ cmd: 'stop' }, '*');
+    }
+  }
+
   // ─── Recording ───────────────────────────────────────────────────────────
   async function startRecording() {
     try {
-      // 1. Webcam + mic first — must happen before getDisplayMedia so that
-      //    requestPictureInPicture() can be called while user gesture is still live.
+      // 1. Camera + mic — request separately so one failing doesn't kill the other.
+      //    Must happen before getDisplayMedia while user gesture is still live (for PiP).
+      let camStream = null, micStream = null;
       try {
-        state.webcamStream = await navigator.mediaDevices.getUserMedia({
+        camStream = await navigator.mediaDevices.getUserMedia({
           video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 60 } },
-          audio: true,
         });
-      } catch {
-        console.warn('Screen Recorder: webcam/mic not available');
+      } catch (err) {
+        const why = err.name === 'NotAllowedError'
+          ? 'Camera denied — click 🔒 in the address bar to allow'
+          : 'Camera not available: ' + err.message;
+        showToast(why, 5000);
+        console.warn('SR: camera failed:', err.name);
+      }
+      try {
+        micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      } catch (err) {
+        const why = err.name === 'NotAllowedError'
+          ? 'Mic denied — click 🔒 in the address bar to allow'
+          : 'Mic not available: ' + err.message;
+        showToast(why, 5000);
+        console.warn('SR: mic failed:', err.name);
+      }
+
+      // Combine into one stream so the rest of the code has a single handle
+      if (camStream || micStream) {
+        const tracks = [
+          ...(camStream  ? camStream.getVideoTracks()  : []),
+          ...(micStream  ? micStream.getAudioTracks()  : []),
+        ];
+        state.webcamStream = new MediaStream(tracks);
       }
 
       // 2. Face preview — PiP if the site allows it, otherwise webcam bubble fallback
-      if (state.webcamStream) {
+      //    Reel template composites the camera on-canvas, so skip the overlay entirely.
+      const hasCamVideo = state.webcamStream && state.webcamStream.getVideoTracks().length > 0;
+      const _activeTemplate = (window.SR_BRANDING && window.SR_BRANDING.template) || 'youtube';
+      if (hasCamVideo && _activeTemplate !== 'reel') {
         let pipOk = false;
         if (document.pictureInPictureEnabled) {
           try {
@@ -539,6 +684,7 @@
 
       // 3. Screen capture
       const source = document.getElementById('sr-source')?.value ?? 'tab';
+      state.source = source;
       const displayOptions = {
         video: { cursor: 'always', frameRate: { ideal: 60 }, width: { ideal: 1920 }, height: { ideal: 1080 } },
         audio: { echoCancellation: false, noiseSuppression: false },
@@ -549,14 +695,14 @@
       }
       state.screenStream = await navigator.mediaDevices.getDisplayMedia(displayOptions);
 
-      // 4. Offscreen webcam video for canvas compositing
+      // 4. Offscreen webcam video for canvas compositing (only if camera has video tracks)
       const miniVid = document.getElementById('sr-cam-mini-vid');
-      if (state.webcamStream) {
+      if (hasCamVideo) {
         miniVid.srcObject = state.webcamStream;
         document.getElementById('sr-cam-mini').classList.add('active');
 
         state.camVid = document.createElement('video');
-        state.camVid.srcObject = state.webcamStream;
+        state.camVid.srcObject = new MediaStream(state.webcamStream.getVideoTracks());
         state.camVid.muted = true;
         await state.camVid.play();
       }
@@ -583,14 +729,83 @@
       state.drawing = true;
       state.drawInterval = setInterval(() => {
         if (!state.drawing) return;
-        if (!ctxOk()) { cleanupStreams(); return; }
         try {
-          const tmplKey = (window.SR_BRANDING && window.SR_BRANDING.template) || 'side-by-side';
+          // ── Template draw ──────────────────────────────────────────
+          const tmplKey = (window.SR_BRANDING && window.SR_BRANDING.template) || 'youtube';
           const tmpls   = window.SR_TEMPLATES || {};
-          const tmpl    = tmpls[tmplKey] || tmpls['side-by-side'];
+          const tmpl    = tmpls[tmplKey] || tmpls['youtube'];
           if (tmpl) {
-            tmpl.draw({ ctx: ctx2d, CW, CH, screenVid: state.screenVid, camVid: state.camVid, rrect, drawBranding });
+            state.screenDrawRect = null;
+            tmpl.draw({
+              ctx: ctx2d, CW, CH,
+              screenVid: state.screenVid, camVid: state.camVid,
+              rrect, drawBranding,
+              elapsed: state.recStartTime ? (Date.now() - state.recStartTime) / 1000 : 0,
+              setScreenBounds: (r) => { state.screenDrawRect = r; },
+            });
           }
+
+          // ── Post-processing ────────────────────────────────────────
+
+          // 1. Cinematic color grade: vignette + warm tint
+          const vign = ctx2d.createRadialGradient(CW/2, CH/2, CH * 0.22, CW/2, CH/2, CW * 0.70);
+          vign.addColorStop(0, 'rgba(0,0,0,0)');
+          vign.addColorStop(1, 'rgba(0,0,0,0.42)');
+          ctx2d.fillStyle = vign;
+          ctx2d.fillRect(0, 0, CW, CH);
+          ctx2d.fillStyle = 'rgba(255,120,10,0.032)';  // subtle warm tint
+          ctx2d.fillRect(0, 0, CW, CH);
+
+          // 2. Cursor spotlight — tab mode only, uses template-set screen bounds
+          if (state.source === 'tab' && state.screenDrawRect) {
+            const { dx, dy, dw, dh } = state.screenDrawRect;
+            const sx = dx + (state.cursorX / window.innerWidth)  * dw;
+            const sy = dy + (state.cursorY / window.innerHeight) * dh;
+            const glow = ctx2d.createRadialGradient(sx, sy, 0, sx, sy, CH * 0.10);
+            glow.addColorStop(0,   'rgba(255,255,255,0.11)');
+            glow.addColorStop(0.5, 'rgba(255,255,255,0.03)');
+            glow.addColorStop(1,   'rgba(0,0,0,0)');
+            ctx2d.fillStyle = glow;
+            ctx2d.fillRect(0, 0, CW, CH);
+          }
+
+          // 3. Countdown overlay (before MediaRecorder starts — not in recording)
+          if (state.countdown > 0) {
+            ctx2d.fillStyle = 'rgba(0,0,0,0.6)';
+            ctx2d.fillRect(0, 0, CW, CH);
+            ctx2d.save();
+            ctx2d.font = `800 ${Math.round(CH * 0.22)}px -apple-system, sans-serif`;
+            ctx2d.fillStyle = '#ffffff';
+            ctx2d.textAlign = 'center';
+            ctx2d.textBaseline = 'middle';
+            ctx2d.shadowColor = 'rgba(255,255,255,0.25)';
+            ctx2d.shadowBlur = 60;
+            ctx2d.fillText(state.countdown, CW / 2, CH / 2);
+            ctx2d.restore();
+          }
+
+          // 4. Fade-in from black at recording start (~2s)
+          if (state.fadeIn < 1) {
+            state.fadeIn = Math.min(1, state.fadeIn + 1 / 120);
+            ctx2d.fillStyle = `rgba(0,0,0,${1 - state.fadeIn})`;
+            ctx2d.fillRect(0, 0, CW, CH);
+          }
+
+          // 5. Fade-out to black when stopping (~2s)
+          if (state.isFadingOut) {
+            state.fadeOut = Math.min(1, state.fadeOut + 1 / 120);
+            ctx2d.fillStyle = `rgba(0,0,0,${state.fadeOut})`;
+            ctx2d.fillRect(0, 0, CW, CH);
+            if (state.fadeOut >= 1) {
+              state.isFadingOut = false;
+              // Stop MediaRecorder before cleanupStreams (which kills this interval)
+              if (state.mediaRecorder && state.mediaRecorder.state !== 'inactive') {
+                state.mediaRecorder.stop();
+              }
+              setTimeout(finalizeStop, 50); // slight delay so last chunk is flushed
+            }
+          }
+
         } catch (e) { console.warn('SR draw error:', e); }
       }, 1000 / 60); // 60 fps — runs even when tab is not focused
 
@@ -614,37 +829,63 @@
         ...dest.stream.getAudioTracks(),
       ]);
 
-      // 7. MediaRecorder
+      // 7. MediaRecorder — create but don't start yet (countdown first)
       const mimeType = pickMimeType();
       state.mediaRecorder = new MediaRecorder(combined, {
         mimeType,
-        videoBitsPerSecond: 12_000_000,  // 12 Mbps — high clarity
-        audioBitsPerSecond:    192_000,  // 192 kbps
+        videoBitsPerSecond: 12_000_000,
+        audioBitsPerSecond:    192_000,
       });
       state.chunks = [];
       state.mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) state.chunks.push(e.data); };
       state.mediaRecorder.onstop  = saveFile;
-      state.mediaRecorder.onerror = (e) => showToast('Recorder error: ' + e.error?.message, 5000);
-      state.mediaRecorder.start(1000);
-      state.recording = true;
+      state.mediaRecorder.onerror = (e) => {
+        console.error('SR: MediaRecorder error:', e.error);
+        showToast('Recorder error: ' + e.error?.message, 5000);
+      };
+      state.mediaRecorder.onstop = () => { console.log('SR: MediaRecorder stopped'); saveFile(); };
 
-      screenTrack.addEventListener('ended', stopRecording);
+      screenTrack.addEventListener('ended', () => {
+        console.log('SR: screenTrack ended — stopping recording');
+        stopRecording();
+      });
 
-      // 8. Update UI — hide bar so it doesn't appear in the recording
+      // 8. Hide bar now (before countdown) so it's not visible
       document.getElementById('sr-dot').classList.add('on');
       document.getElementById('sr-source').style.display    = 'none';
       document.getElementById('sr-rec-btn').style.display   = 'none';
       document.getElementById('sr-pause-btn').style.display = 'inline-flex';
       document.getElementById('sr-stop-btn').style.display  = 'inline-flex';
-      document.getElementById('sr-bar').style.display       = 'none';
+      document.getElementById('sr-bar').style.display = 'none';
 
-      // 9. Timer
+      // 9. Countdown 3-2-1 (DOM overlay + canvas, not recorded)
+      const cdEl = document.createElement('div');
+      cdEl.id = 'sr-countdown';
+      document.body.appendChild(cdEl);
+      for (let i = 3; i >= 1; i--) {
+        state.countdown = i;
+        cdEl.textContent = i;
+        await new Promise(r => setTimeout(r, 1000));
+      }
+      state.countdown = 0;
+      cdEl.remove();
+
+      // 10. Start recording — fade in begins from first frame
+      state.fadeIn = 0;
+      state.fadeOut = 0;
+      state.isFadingOut = false;
+      state._finalized = false;
+      startTeleprompter();
+      state.mediaRecorder.start(1000);
+      state.recording = true;
+      state.recStartTime = Date.now();
+
+      // 11. Timer
       state.seconds = 0;
       updateTimer();
       state.timerInterval = setInterval(() => {
-        if (!ctxOk()) { stopRecording(); return; }
         state.seconds++;
-        updateTimer();
+        try { updateTimer(); } catch {}
       }, 1000);
 
     } catch (err) {
@@ -672,9 +913,8 @@
       state.mediaRecorder.resume();
       state.paused = false;
       state.timerInterval = setInterval(() => {
-        if (!ctxOk()) { stopRecording(); return; }
         state.seconds++;
-        updateTimer();
+        try { updateTimer(); } catch {}
       }, 1000);
       dot.classList.remove('paused');
       dot.classList.add('on');
@@ -685,25 +925,38 @@
 
   function stopRecording() {
     if (!state.recording) return;
-
+    console.log('SR: stopRecording', new Error().stack);
     clearInterval(state.timerInterval);
     state.recording = false;
-
-    if (state.mediaRecorder && state.mediaRecorder.state !== 'inactive') {
-      state.mediaRecorder.stop();          // triggers saveFile via onstop
-    }
-
-    cleanupStreams();
-
     state.paused = false;
-    // Show bar again — return to format picker so user can choose next format
+    state.isFadingOut = true;
+    state.fadeOut = 0;
+    // Safety net: finalizeStop after 3s in case draw loop doesn't complete fade
+    setTimeout(() => {
+      if (state.isFadingOut) {
+        state.isFadingOut = false;
+        finalizeStop();
+      }
+    }, 3000);
+  }
+
+  function finalizeStop() {
+    if (state._finalized) return;
+    state._finalized = true;
+    // MediaRecorder.stop() already called by draw loop (or safety timeout does it here)
+    if (state.mediaRecorder && state.mediaRecorder.state !== 'inactive') {
+      state.mediaRecorder.stop();
+    }
+    cleanupStreams();
+    state._finalized = false;
+
+    // Reset UI — return to format picker
     document.getElementById('sr-bar').style.display            = 'flex';
     document.getElementById('sr-format-pick').style.display    = 'flex';
     document.getElementById('sr-controls').classList.remove('active');
     document.getElementById('sr-dot').classList.remove('on');
     document.getElementById('sr-dot').classList.remove('paused');
     document.getElementById('sr-cam-mini').classList.remove('active');
-    // Reset internal control states for next session
     document.getElementById('sr-rec-btn').style.display   = '';
     document.getElementById('sr-source').style.display    = '';
     document.getElementById('sr-pause-btn').style.display = 'none';
@@ -711,18 +964,17 @@
     document.getElementById('sr-pause-btn').innerHTML = '&#9646;&#9646; Pause';
     document.getElementById('sr-stop-btn').style.display  = 'none';
     document.getElementById('sr-webcam')?.classList.remove('active');
-    // Reset bubble position
     const bubble = document.getElementById('sr-webcam');
     if (bubble) {
-      bubble.style.left   = '28px';
-      bubble.style.top    = '';
-      bubble.style.right  = '';
-      bubble.style.bottom = '28px';
+      bubble.style.left = '28px'; bubble.style.top = '';
+      bubble.style.right = ''; bubble.style.bottom = '28px';
     }
     document.getElementById('sr-timer').textContent = '0:00';
+    document.getElementById('sr-countdown')?.remove();
   }
 
   function cleanupStreams() {
+    stopTeleprompter();
     state.drawing = false;
     clearInterval(state.drawInterval);
     state.drawInterval = null;
@@ -768,7 +1020,8 @@
       URL.revokeObjectURL(url);
     }, 10000);
 
-    showToast('Recording saved to Downloads!', 3000);
+    const fmt = mimeType.includes('mp4') ? 'MP4' : 'WebM';
+    showToast(`Saved as ${fmt} — check Downloads`, 4000);
   }
 
   // ─── Helpers ─────────────────────────────────────────────────────────────
@@ -782,13 +1035,20 @@
 
   function pickMimeType() {
     const candidates = [
-      'video/mp4;codecs=avc1.42E01E,mp4a.40.2',  // H.264 + AAC — preferred
+      'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+      'video/mp4;codecs=avc3.42E01E,mp4a.40.2',
       'video/mp4;codecs=avc1,mp4a.40.2',
-      'video/webm;codecs=vp9,opus',               // fallback if MP4 unsupported
+      'video/mp4;codecs=avc3,mp4a.40.2',
+      'video/mp4',
+      'video/webm;codecs=vp9,opus',
       'video/webm;codecs=vp8,opus',
       'video/webm',
     ];
-    return candidates.find(t => MediaRecorder.isTypeSupported(t)) || 'video/webm';
+    // Log all support results so we can diagnose
+    candidates.forEach(t => console.log('SR isTypeSupported:', t, '→', MediaRecorder.isTypeSupported(t)));
+    const chosen = candidates.find(t => MediaRecorder.isTypeSupported(t)) || 'video/webm';
+    console.log('SR: chosen format:', chosen);
+    return chosen;
   }
 
   let toastTimer = null;
@@ -802,9 +1062,13 @@
   }
 
   function teardown() {
+    stopTeleprompter();
     document.getElementById('sr-bar')?.remove();
     document.getElementById('sr-webcam')?.remove();
     document.getElementById('sr-toast')?.remove();
+    document.getElementById('sr-countdown')?.remove();
+    stopTeleprompter();
+    if (state.tp.popup && !state.tp.popup.closed) state.tp.popup.close();
     document.getElementById('sr-styles')?.remove();
     window.__srLoaded = false;
   }

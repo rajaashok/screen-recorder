@@ -16,5 +16,9 @@
     "default_title": "Screen Recorder",
     "default_icon": { "128": "icon.png" }
   },
-  "icons": { "128": "icon.png" }
+  "icons": { "128": "icon.png" },
+  "web_accessible_resources": [{
+    "resources": ["teleprompter.html", "teleprompter.js"],
+    "matches": ["<all_urls>"]
+  }]
 }
