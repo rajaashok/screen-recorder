@@ -82,8 +82,10 @@ window.SR_TEMPLATES['reel'] = {
 
       ctx.filter = 'blur(20px) brightness(0.45)';
       ctx.drawImage(screenVid, bx, by, bw, bh);
-      ctx.filter = 'none';
+      // Graded: +8% contrast, +6% saturation — crispness without clipping whites
+      ctx.filter = 'contrast(1.08) saturate(1.06)';
       ctx.drawImage(screenVid, dx, dy, dw, dh);
+      ctx.filter = 'none';
 
       setScreenBounds && setScreenBounds({ dx, dy, dw, dh });
     }
@@ -140,26 +142,59 @@ window.SR_TEMPLATES['reel'] = {
           dw = camW; dh = dw / cvAR;
           dx = camX; dy = camY - (dh - camH) / 2;
         }
+        // Lift shadows, warm skin tones, add punch
+        ctx.filter = 'brightness(1.18) contrast(1.12) saturate(1.15)';
         ctx.drawImage(camVid, dx, dy, dw, dh);
+        ctx.filter = 'none';
+
+        // Warm skin-tone wash — very subtle amber tint
+        ctx.fillStyle = 'rgba(255,145,60,0.055)';
+        ctx.fillRect(camX, camY, camW, camH);
+
+        // Inner vignette — draws viewer's eye to face
+        const vig = ctx.createRadialGradient(
+          camX + camW / 2, camY + camH * 0.42, camH * 0.18,
+          camX + camW / 2, camY + camH * 0.42, camH * 0.72
+        );
+        vig.addColorStop(0,   'rgba(0,0,0,0)');
+        vig.addColorStop(0.6, 'rgba(0,0,0,0.08)');
+        vig.addColorStop(1,   'rgba(0,0,0,0.38)');
+        ctx.fillStyle = vig;
+        ctx.fillRect(camX, camY, camW, camH);
       }
     });
 
-    // ── Brand bookmark tile (animated position) ───────────────────────────
+    // ── Brand card tile (animated position) ──────────────────────────────
     const b      = window.SR_BRANDING;
     const accent = (b && b.accentColor) || '#ff3b30';
-    const TAB_H  = 5;   // bookmark tab stripe at top of tile
 
     drawTile(bX, bY, bW, bH, R, () => {
-      // Card background
+      const cx = bX + bW / 2;
+
+      // ── Background: deep navy → black ───────────────────────────────────
       const bg = ctx.createLinearGradient(bX, bY, bX, bY + bH);
-      bg.addColorStop(0, '#222228');
-      bg.addColorStop(1, '#161619');
+      bg.addColorStop(0,    '#18181f');
+      bg.addColorStop(0.5,  '#111116');
+      bg.addColorStop(1,    '#0a0a0e');
       ctx.fillStyle = bg;
       ctx.fillRect(bX, bY, bW, bH);
 
-      // Bookmark tab — accent stripe at very top
-      ctx.fillStyle = accent;
-      ctx.fillRect(bX, bY, bW, TAB_H);
+      // ── Accent glow bar at top ───────────────────────────────────────────
+      // Full-width gradient bar (accent → transparent)
+      const barH = Math.round(bH * 0.012);    // ~7px
+      const bar  = ctx.createLinearGradient(bX, bY, bX + bW, bY);
+      bar.addColorStop(0,   accent);
+      bar.addColorStop(0.5, accent);
+      bar.addColorStop(1,   'rgba(255,255,255,0.15)');
+      ctx.fillStyle = bar;
+      ctx.fillRect(bX, bY, bW, barH);
+
+      // Soft glow bloom below the bar
+      const bloom = ctx.createLinearGradient(bX, bY + barH, bX, bY + bH * 0.28);
+      bloom.addColorStop(0,   `${accent}28`);  // ~16% opacity
+      bloom.addColorStop(1,   'rgba(0,0,0,0)');
+      ctx.fillStyle = bloom;
+      ctx.fillRect(bX, bY + barH, bW, bH * 0.28);
 
       if (b && b.show) {
         const name     = (b.name    || '').trim();
@@ -168,34 +203,69 @@ window.SR_TEMPLATES['reel'] = {
         const website  = (b.website || '').trim();
         const subtitle = [title, company].filter(Boolean).join('  ·  ');
         const ff       = "system-ui,-apple-system,'Segoe UI',Arial,sans-serif";
+        const maxTW    = bW - 32;
 
         if (name) {
-          const lines   = [name, subtitle, website].filter(Boolean);
-          // Size relative to tile WIDTH so text never overflows the tile
-          const nSz     = Math.round(bW * 0.115);  // ~46px at 400px wide
-          const sSz     = Math.round(bW * 0.075);  // ~30px
-          const wSz     = Math.round(bW * 0.065);  // ~26px
-          const sizes   = [nSz, sSz, wSz].slice(0, lines.length);
-          const weights = ['700', '300', '500'];
-          const colors  = ['#ffffff', 'rgba(255,255,255,0.58)', accent];
-          const lGap    = Math.round(bH * 0.055);
-          const maxTW   = bW - 24;   // max text width with padding
+          const nSz  = Math.round(bW * 0.122);   // ~49px
+          const sSz  = Math.round(bW * 0.078);   // ~31px
+          const wSz  = Math.round(bW * 0.068);   // ~27px
+          const lGap = Math.round(bH * 0.048);
 
-          const totalH = sizes.reduce((s, v) => s + v, 0) + lGap * (lines.length - 1);
-          let tY = bY + TAB_H + (bH - TAB_H - totalH) / 2;
+          // Measure total block height to center vertically
+          const lines   = [name, subtitle, website].filter(Boolean);
+          const sizes   = [nSz, sSz, wSz].slice(0, lines.length);
+          const totalH  = sizes.reduce((s, v) => s + v, 0) + lGap * (lines.length - 1);
+          let tY = bY + barH + (bH - barH - totalH) / 2;
 
           ctx.textAlign    = 'center';
           ctx.textBaseline = 'top';
-          ctx.shadowColor  = 'rgba(0,0,0,0.55)';
-          ctx.shadowBlur   = 5;
-          ctx.shadowOffsetY = 1;
 
-          lines.forEach((line, i) => {
-            ctx.font      = `${weights[i]} ${sizes[i]}px ${ff}`;
-            ctx.fillStyle = colors[i];
-            ctx.fillText(line, bX + bW / 2, tY, maxTW);
-            tY += sizes[i] + lGap;
-          });
+          // ── Name — large, white, text-shadow glow ──────────────────────
+          ctx.save();
+          ctx.font        = `700 ${nSz}px ${ff}`;
+          ctx.fillStyle   = '#ffffff';
+          ctx.shadowColor = accent + '55';
+          ctx.shadowBlur  = 18;
+          ctx.shadowOffsetY = 0;
+          ctx.fillText(name, cx, tY, maxTW);
+          ctx.restore();
+          tY += nSz + lGap;
+
+          // ── Hairline divider ───────────────────────────────────────────
+          if (subtitle || website) {
+            ctx.save();
+            const divW = Math.round(bW * 0.55);
+            ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+            ctx.lineWidth   = 1;
+            ctx.beginPath();
+            ctx.moveTo(cx - divW / 2, tY - lGap * 0.45);
+            ctx.lineTo(cx + divW / 2, tY - lGap * 0.45);
+            ctx.stroke();
+            ctx.restore();
+          }
+
+          // ── Subtitle ───────────────────────────────────────────────────
+          if (subtitle) {
+            ctx.save();
+            ctx.font        = `300 ${sSz}px ${ff}`;
+            ctx.fillStyle   = 'rgba(255,255,255,0.62)';
+            ctx.shadowColor = 'transparent';
+            ctx.fillText(subtitle, cx, tY, maxTW);
+            ctx.restore();
+            tY += sSz + lGap;
+          }
+
+          // ── Website — accent color, medium weight ──────────────────────
+          if (website) {
+            ctx.save();
+            ctx.font        = `500 ${wSz}px ${ff}`;
+            ctx.fillStyle   = accent;
+            ctx.shadowColor = accent + '66';
+            ctx.shadowBlur  = 10;
+            ctx.shadowOffsetY = 0;
+            ctx.fillText(website, cx, tY, maxTW);
+            ctx.restore();
+          }
         }
       }
     });

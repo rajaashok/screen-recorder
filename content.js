@@ -522,22 +522,6 @@
     const boxX = scrX + scrW - outerPad - boxW;
     const boxY = panY + scrH - outerPad - boxH;
 
-    // Corner vignette for legibility
-    const panRadius = Math.round(CH * 0.045);
-    ctx.save();
-    rrect(ctx, scrX, panY, scrW, scrH, panRadius);
-    ctx.clip();
-    const vg = ctx.createRadialGradient(
-      scrX + scrW, panY + scrH, 0,
-      scrX + scrW, panY + scrH, scrW * 0.55
-    );
-    vg.addColorStop(0,   'rgba(0,0,0,0.60)');
-    vg.addColorStop(0.5, 'rgba(0,0,0,0.22)');
-    vg.addColorStop(1,   'rgba(0,0,0,0)');
-    ctx.fillStyle = vg;
-    ctx.fillRect(scrX, panY, scrW, scrH);
-    ctx.restore();
-
     ctx.save();
 
     // Dark semi-transparent background box with rounded corners
@@ -747,13 +731,8 @@
 
           // ── Post-processing ────────────────────────────────────────
 
-          // 1. Cinematic color grade: vignette + warm tint
-          const vign = ctx2d.createRadialGradient(CW/2, CH/2, CH * 0.22, CW/2, CH/2, CW * 0.70);
-          vign.addColorStop(0, 'rgba(0,0,0,0)');
-          vign.addColorStop(1, 'rgba(0,0,0,0.42)');
-          ctx2d.fillStyle = vign;
-          ctx2d.fillRect(0, 0, CW, CH);
-          ctx2d.fillStyle = 'rgba(255,120,10,0.032)';  // subtle warm tint
+          // 1. Subtle warm tint only — no vignette darkening
+          ctx2d.fillStyle = 'rgba(255,120,10,0.032)';
           ctx2d.fillRect(0, 0, CW, CH);
 
           // 2. Cursor spotlight — tab mode only, uses template-set screen bounds
