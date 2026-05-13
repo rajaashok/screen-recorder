@@ -70,20 +70,11 @@ window.SR_TEMPLATES['reel'] = {
       const svAR  = (screenVid.videoWidth  || CW) / (screenVid.videoHeight || screenH);
       const panAR = CW / screenH;
 
-      // Contain — all content visible, no cropping
+      // Contain — all content visible; no bars if window was resized for reel
       let dw, dh, dx, dy;
       if (svAR > panAR) { dw = CW; dh = dw / svAR; dx = 0; dy = (screenH - dh) / 2; }
       else               { dh = screenH; dw = dh * svAR; dx = (CW - dw) / 2; dy = 0; }
 
-      // Cover — blurred fill behind the letterbox bars
-      let bw, bh, bx, by;
-      if (svAR > panAR) { bh = screenH; bw = bh * svAR; bx = -(bw - CW) / 2; by = 0; }
-      else               { bw = CW; bh = bw / svAR; bx = 0; by = -(bh - screenH) / 2; }
-
-      ctx.filter = 'blur(20px) brightness(0.45)';
-      ctx.drawImage(screenVid, bx, by, bw, bh);
-      // Graded: +8% contrast, +6% saturation — crispness without clipping whites
-      ctx.filter = 'contrast(1.08) saturate(1.06)';
       ctx.drawImage(screenVid, dx, dy, dw, dh);
       ctx.filter = 'none';
 
@@ -92,11 +83,12 @@ window.SR_TEMPLATES['reel'] = {
     ctx.restore();
 
     // Soft vignette at bottom of screen → tiles feel like they float above
-    const vign = ctx.createLinearGradient(0, screenH - 140, 0, screenH);
+    const vigH = Math.round(screenH * 0.11);
+    const vign = ctx.createLinearGradient(0, screenH - vigH, 0, screenH);
     vign.addColorStop(0, 'rgba(0,0,0,0)');
     vign.addColorStop(1, 'rgba(0,0,0,0.50)');
     ctx.fillStyle = vign;
-    ctx.fillRect(0, screenH - 140, CW, 140);
+    ctx.fillRect(0, screenH - vigH, CW, vigH);
 
     // ── Tile helper: shadow → clip → content → border ────────────────────
     function drawTile(x, y, w, h, r, fillFn) {

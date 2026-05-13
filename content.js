@@ -187,6 +187,26 @@
     .sr-fmt-btn.youtube:hover { background: rgba(255,30,30,0.18); border-color: rgba(255,60,60,0.5); }
     .sr-fmt-btn.reel:hover    { background: rgba(130,80,255,0.18); border-color: rgba(160,100,255,0.5); }
 
+    #sr-resize-btn {
+      display: none;
+      align-items: center;
+      gap: 6px;
+      border-radius: 999px;
+      padding: 6px 14px;
+      font-size: 12px;
+      font-weight: 500;
+      border: 1px solid rgba(130,80,255,0.4);
+      background: rgba(130,80,255,0.15);
+      color: #c4a0ff;
+      cursor: pointer;
+      transition: all 0.15s;
+      white-space: nowrap;
+    }
+    #sr-resize-btn:hover { background: rgba(130,80,255,0.28); }
+    #sr-resize-btn.youtube { border-color: rgba(255,60,60,0.4); background: rgba(255,30,30,0.12); color: #ff9a9a; }
+    #sr-resize-btn.youtube:hover { background: rgba(255,30,30,0.22); }
+    #sr-resize-btn.active { display: inline-flex; }
+
     /* ── Recording controls (shown after format is chosen) ── */
     #sr-controls {
       display: none;
@@ -334,6 +354,7 @@
       <div id="sr-format-pick">
         <button class="sr-fmt-btn youtube" id="sr-fmt-youtube">▶ YouTube</button>
         <button class="sr-fmt-btn reel"    id="sr-fmt-reel">↕ Reel</button>
+        <button id="sr-resize-btn">⇔ Resize for Reel</button>
       </div>
       <div id="sr-controls">
         <div id="sr-cam-mini"><video id="sr-cam-mini-vid" autoplay muted playsinline></video></div>
@@ -411,11 +432,52 @@
     // Format picker — sets template and reveals recording controls
     function selectFormat(tmpl) {
       if (window.SR_BRANDING) window.SR_BRANDING.template = tmpl;
-      document.getElementById('sr-format-pick').style.display = 'none';
-      document.getElementById('sr-controls').classList.add('active');
+      const resizeBtn = document.getElementById('sr-resize-btn');
+      if (tmpl === 'reel') {
+        resizeBtn.className = 'active';
+        resizeBtn.textContent = '⇔ Resize for Reel';
+        resizeBtn.dataset.tmpl = 'reel';
+      } else if (tmpl === 'youtube') {
+        resizeBtn.className = 'active youtube';
+        resizeBtn.textContent = '⇔ Resize for YouTube';
+        resizeBtn.dataset.tmpl = 'youtube';
+      } else {
+        resizeBtn.classList.remove('active');
+        document.getElementById('sr-format-pick').style.display = 'none';
+        document.getElementById('sr-controls').classList.add('active');
+      }
     }
     bar.querySelector('#sr-fmt-youtube').addEventListener('click', () => selectFormat('youtube'));
     bar.querySelector('#sr-fmt-reel').addEventListener('click',    () => selectFormat('reel'));
+
+    bar.querySelector('#sr-resize-btn').addEventListener('click', () => {
+      const chromeW = window.outerWidth  - window.innerWidth;
+      const chromeH = window.outerHeight - window.innerHeight;
+      const tmpl    = document.getElementById('sr-resize-btn').dataset.tmpl;
+      let innerW, innerH;
+
+      if (tmpl === 'reel') {
+        // Screen zone: 1080 wide × (1920 * 0.67) tall → AR ≈ 0.840
+        const zoneAR = 1080 / Math.round(1920 * 0.67);
+        innerW = Math.min(1080, window.screen.width - 100 - chromeW);
+        innerH = Math.round(innerW / zoneAR);
+      } else {
+        // YouTube screen panel: 1317 × 1020 → AR ≈ 1.291
+        // Target innerW so the panel fills without bars
+        const CH = 1080, CW = 1920;
+        const pad = Math.round(CH * 0.028), gap = Math.round(CH * 0.014);
+        const camPW = Math.round(CW * 0.275);
+        const scrW  = CW - (pad + camPW + gap) - pad;  // 1317
+        const scrH  = CH - pad * 2;                     // 1020
+        const panAR = scrW / scrH;                      // ~1.291
+        innerH = Math.min(1080, window.screen.height - 100 - chromeH);
+        innerW = Math.round(innerH * panAR);
+      }
+
+      chrome.runtime.sendMessage({ cmd: 'resizeForReel', w: innerW + chromeW, h: innerH + chromeH });
+      document.getElementById('sr-format-pick').style.display = 'none';
+      document.getElementById('sr-controls').classList.add('active');
+    });
 
     bar.querySelector('#sr-tp-toggle').addEventListener('click', openTpPopup);
 
@@ -608,20 +670,30 @@
           video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 60 } },
         });
       } catch (err) {
-        const why = err.name === 'NotAllowedError'
-          ? 'Camera denied — click 🔒 in the address bar to allow'
-          : 'Camera not available: ' + err.message;
+        let why;
+        if (err.name === 'NotAllowedError') {
+          why = err.message.toLowerCase().includes('permissions policy')
+            ? 'Camera blocked by this page — try navigating to a different tab first'
+            : 'Camera denied — click 🔒 in the address bar to allow';
+        } else {
+          why = 'Camera not available: ' + err.message;
+        }
         showToast(why, 5000);
-        console.warn('SR: camera failed:', err.name);
+        console.warn('SR: camera failed:', err.name, err.message);
       }
       try {
         micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
       } catch (err) {
-        const why = err.name === 'NotAllowedError'
-          ? 'Mic denied — click 🔒 in the address bar to allow'
-          : 'Mic not available: ' + err.message;
+        let why;
+        if (err.name === 'NotAllowedError') {
+          why = err.message.toLowerCase().includes('permissions policy')
+            ? 'Mic blocked by this page — try navigating to a different tab first'
+            : 'Mic denied — click 🔒 in the address bar to allow';
+        } else {
+          why = 'Mic not available: ' + err.message;
+        }
         showToast(why, 5000);
-        console.warn('SR: mic failed:', err.name);
+        console.warn('SR: mic failed:', err.name, err.message);
       }
 
       // Combine into one stream so the rest of the code has a single handle
